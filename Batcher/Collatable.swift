@@ -20,8 +20,8 @@ public protocol _Collatable {
          _ rootOut: inout Root, _ rootKeyPath: PartialKeyPath<Root>, _ rootIn: [Root])
 }
 
-// Collatable: a protocol representing a type where you can stack elements together to
-// get some higher-rank element of the same type (example: tensors, tuple of tensors)
+/// A protocol representing a type where you can stack elements together to
+/// get some higher-rank element of the same type (example: tensors, tuple of tensors)
 public protocol Collatable: _Collatable {
     init(collating: [Self])
 }

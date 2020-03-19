@@ -14,40 +14,36 @@
 
 import TensorFlow
 
-// Return the input with no operation done
-public func identity<C>(_ x: C) -> C { return x }
+/// Returns `x`.
+public func identity<T>(_ x: T) -> T { x }
 
-// Default sample on a collection
-// Returns indices from 0 to dataset.count, potentially shuffled
+/// Returns the elements of `0..<dataset.count`, in that order if `shuffled == false`,
+/// and randomly shuffled otherwise.
+// Note: dataset is inout because this is required by `Batcher`
 public func defaultSample<C: Collection>(on dataset: inout C, shuffled: Bool) -> [Int] {
     return shuffled ? Array(0..<dataset.count).shuffled() : Array(0..<dataset.count)
 }
 
-// Default collate function for samples that conform to Collatable
-public func defaultCollate<S: Collatable>(_ batch: [S]) -> S {
-    return S(collating: batch)
-}
-
-// Main struct to collate the samples from a dataset into a batch
+/// Main struct to collate the samples from a dataset into batches
 public struct Batcher<C: Collection> where C.Index == Int {
-    // Dataset to get the batches from
+    /// The dataset to get the batches from.
     public var dataset: C
-    // Size of the the batch
+    /// The size of each batch.
     public var batchSize: Int
-    // Number of workers to use in parallel to fetch the samples
-    public var numWorkers: Int = 1
-    // Shuffle the dataset at each iteration
+    /// Optionally set a limit to the number of threads used.
+    public var threadsLimit: Int? = nil
+    /// If `true`, shuffle the dataset at each iteration.
     public var shuffle: Bool = false
-    // Drop the last batch if it has less elements than batchSize
+    /// If `true`, drop the last batch if it has less elements than batchSize.
     public var dropLast: Bool = false
-    // Hook to customize the way indices are sampled at each iteration
+    /// Hook to customize the way indices are sampled at each iteration.
     public let sampleIndices: (inout C, Bool) -> [Int]
-    // Hook to add padding to the samples before they are collated
+    /// Hook to add padding to the samples before they are collated.
     public let padSamples: ([C.Element]) -> [C.Element]
-    // Hook to customize how the samples are collated
+    /// Hook to customize how the samples are collated.
     public let collateSamples: ([C.Element]) -> C.Element
     
-    // Length of the batcher (number of batches it contains)
+    /// Returns the number of batches contained in the `Batcher`.
     public var count: Int {
         let nSamples = dataset.count
         return nSamples / batchSize + (nSamples % batchSize == 0 || dropLast ? 0 : 1)
@@ -56,7 +52,7 @@ public struct Batcher<C: Collection> where C.Index == Int {
     public init(
         on dataset: C, 
         batchSize: Int, 
-        numWorkers: Int = 1, 
+        threadsLimit: Int? = nil, 
         shuffle: Bool = false, 
         dropLast: Bool = false,
         sampleIndices: @escaping (inout C, Bool) -> [Int] = defaultSample,
@@ -65,7 +61,7 @@ public struct Batcher<C: Collection> where C.Index == Int {
     ) {
         self.dataset = dataset
         self.batchSize = batchSize
-        self.numWorkers = numWorkers
+        self.threadsLimit = threadsLimit
         self.shuffle = shuffle
         self.dropLast = dropLast
         self.sampleIndices = sampleIndices
@@ -81,13 +77,13 @@ public struct Batcher<C: Collection> where C.Index == Int {
 
 // Iterator through a Batcher
 public struct BatchIterator<C: Collection>: IteratorProtocol, Sequence where C.Index == Int{
-    // Batcher to iterate through
+    /// Batcher to iterate through.
     var b: Batcher<C>
-    // Indices that will be used to go through the dataset of b
+    /// Indices that will be used to go through the dataset of `b`.
     let indices: [Int]
-    // The length of the underlying dataset
+    /// The length of the underlying dataset.
     let samplesCount: Int
-    // Where we are at in the dataset
+    /// Where we are at in the dataset.
     var pos: Int = 0
     
     init(_ b: Batcher<C>) { 
@@ -97,7 +93,7 @@ public struct BatchIterator<C: Collection>: IteratorProtocol, Sequence where C.I
         pos = 0
     }
     
-    // Returns the next batch
+    /// Returns the next batch
     public mutating func next() -> C.Element? {
         guard pos < samplesCount else { return nil }
         let end = Swift.min(pos + b.batchSize, samplesCount)
@@ -105,7 +101,8 @@ public struct BatchIterator<C: Collection>: IteratorProtocol, Sequence where C.I
         // The idea is to have samples processed and collated on the CPU before moving to the host.
         // This part has not been optimized yet
         return withDevice(.cpu) { () -> C.Element in
-            let samples = Array(pos..<end).concurrentMap(nthreads: Swift.min(b.numWorkers, end-pos)) {
+            let n = b.threadsLimit == nil ? 1 : (end-pos) / b.threadsLimit
+            let samples = Array(pos..<end).concurrentMap(minBatchSize: n) {
                 b.dataset[indices[$0]]
             }
             pos = end
@@ -114,12 +111,17 @@ public struct BatchIterator<C: Collection>: IteratorProtocol, Sequence where C.I
     }
 }
 
-// Add default collateSamples when the dataset elements conform to Collatable
+/// Collate function when `S` conforms to Collatable
+public func defaultCollate<S: Collatable>(_ batch: [S]) -> S {
+    return S(collating: batch)
+}
+
 public extension Batcher where C.Element: Collatable {
+    /// Add default to collateSamples when the dataset elements conform to Collatable
     init(
         on dataset: C, 
         batchSize: Int, 
-        numWorkers: Int = 1, 
+        threadsLimit: Int? = nil, 
         shuffle: Bool = false, 
         dropLast: Bool = false,
         sampleIndices: @escaping (inout C, Bool) -> [Int] = defaultSample,
@@ -128,7 +130,7 @@ public extension Batcher where C.Element: Collatable {
     ) {
         self.dataset = dataset
         self.batchSize = batchSize
-        self.numWorkers = numWorkers
+        self.threadsLimit = threadsLimit
         self.shuffle = shuffle
         self.dropLast = dropLast
         self.sampleIndices = sampleIndices

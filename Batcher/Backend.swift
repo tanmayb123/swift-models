@@ -13,37 +13,36 @@
 // limitations under the License.
 
 import Foundation
-import TensorFlow
 
-// ThreadSafe and concurrentMap based on https://talk.objc.io/episodes/S01E90-concurrent-map
-// TODO: build a proper separate module that does the parallel processing
-public final class ThreadSafe<A> {
-    var _value: A
-    let queue = DispatchQueue(label: "ThreadSafe")
-    init(_ value: A) { self._value = value }
-  
-    var value: A {
-        return queue.sync { _value }
-    }
-    func atomically(_ transform: (inout A) -> ()) {
-        queue.sync { transform(&self._value) }
-    }
-}
+// The goal of this module is to add support for a parallel mapping on arrays
+// used by `Batcher` when iterating through batches.
 
-public extension Array {
-    func concurrentMap<B>(nthreads:Int?=nil, _ transform: (Element) -> B) -> [B] {
-        let result = ThreadSafe(Array<B?>(repeating: nil, count: count))
-        let nt = nthreads ?? count
-        let cs = (count-1)/nt+1
-        DispatchQueue.concurrentPerform(iterations: nt) { i in
-            let min = i*cs
-            let max = min+cs>count ? count : min+cs
-            for idx in (min..<max) {
-                let element = self[idx]
-                let transformed = transform(element)
-                result.atomically { $0[idx] = transformed }
+// Implementations of `concurrentMap` 
+extension RandomAccessCollection {
+    /// Returns `self.map(transform)`, computed in parallel on chuncks of self 
+    /// of size `minBatchSize`.
+    ///
+    /// - Requires: `transform` is safe to call from multiple threads.
+    func concurrentMap<B>(minBatchSize: Int = 1, _ transform: (Element) -> B) -> [B] {
+        precondition(minBatchSize >= 1)
+        let n = self.count
+        let batchCount = (n + minBatchSize - 1) / minBatchSize
+        if batchCount < 2 { return self.map(transform) }
+        
+        return Array(unsafeUninitializedCapacity: n) {
+            uninitializedMemory, resultCount in
+            resultCount = n
+            let baseAddress = uninitializedMemory.baseAddress!
+            
+            DispatchQueue.concurrentPerform(iterations: batchCount) { b in
+                let startOffset = b * n / batchCount
+                let endOffset = (b + 1) * n / batchCount
+                var sourceIndex = index(self.startIndex, offsetBy: startOffset)
+                for p in baseAddress+startOffset..<baseAddress+endOffset {
+                    p.initialize(to: transform(self[sourceIndex]))
+                    formIndex(after: &sourceIndex)
+                }
             }
         }
-        return result.value.map { $0! }
     }
 }
