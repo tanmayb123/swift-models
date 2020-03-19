@@ -20,14 +20,16 @@ public func identity<T>(_ x: T) -> T { x }
 /// Returns the elements of `0..<dataset.count`, in that order if `shuffled == false`,
 /// and randomly shuffled otherwise.
 // Note: dataset is inout because this is required by `Batcher`
-public func defaultSample<C: Collection>(on dataset: inout C, shuffled: Bool) -> [Int] {
+public func defaultSample<SourceDataSet: RandomAccessCollection>(
+    on dataset: inout SourceDataSet, shuffled: Bool) -> [Int] {
     return shuffled ? Array(0..<dataset.count).shuffled() : Array(0..<dataset.count)
 }
 
 /// Main struct to collate the samples from a dataset into batches
-public struct Batcher<C: Collection> where C.Index == Int {
+public struct Batcher<SourceDataSet: RandomAccessCollection> {
+    public typealias Element = SourceDataSet.Element
     /// The dataset to get the batches from.
-    public var dataset: C
+    public var dataset: SourceDataSet
     /// The size of each batch.
     public var batchSize: Int
     /// Optionally set a limit to the number of threads used.
@@ -37,11 +39,11 @@ public struct Batcher<C: Collection> where C.Index == Int {
     /// If `true`, drop the last batch if it has less elements than batchSize.
     public var dropLast: Bool = false
     /// Hook to customize the way indices are sampled at each iteration.
-    public let sampleIndices: (inout C, Bool) -> [Int]
+    public let sampleIndices: (inout SourceDataSet, Bool) -> [Int]
     /// Hook to add padding to the samples before they are collated.
-    public let padSamples: ([C.Element]) -> [C.Element]
+    public let padSamples: ([Element]) -> [Element]
     /// Hook to customize how the samples are collated.
-    public let collateSamples: ([C.Element]) -> C.Element
+    public let collateSamples: ([Element]) -> Element
     
     /// Returns the number of batches contained in the `Batcher`.
     public var count: Int {
@@ -50,14 +52,14 @@ public struct Batcher<C: Collection> where C.Index == Int {
     }
     
     public init(
-        on dataset: C, 
+        on dataset: SourceDataSet, 
         batchSize: Int, 
         threadsLimit: Int? = nil, 
         shuffle: Bool = false, 
         dropLast: Bool = false,
-        sampleIndices: @escaping (inout C, Bool) -> [Int] = defaultSample,
-        padSamples: @escaping ([C.Element]) -> [C.Element] = identity,
-        collateSamples: @escaping ([C.Element]) -> C.Element
+        sampleIndices: @escaping (inout SourceDataSet, Bool) -> [Int] = defaultSample,
+        padSamples: @escaping ([Element]) -> [Element] = identity,
+        collateSamples: @escaping ([Element]) -> Element
     ) {
         self.dataset = dataset
         self.batchSize = batchSize
@@ -70,15 +72,16 @@ public struct Batcher<C: Collection> where C.Index == Int {
     }
     
     // To iterate through the batches
-    public func sequenced() -> BatchIterator<C> {
+    public func sequenced() -> BatchIterator<SourceDataSet> {
         return BatchIterator(self)
     }
 }
 
 // Iterator through a Batcher
-public struct BatchIterator<C: Collection>: IteratorProtocol, Sequence where C.Index == Int{
+public struct BatchIterator<SourceDataSet: RandomAccessCollection>: IteratorProtocol, Sequence {
+    public typealias Element = SourceDataSet.Element
     /// Batcher to iterate through.
-    var b: Batcher<C>
+    var b: Batcher<SourceDataSet>
     /// Indices that will be used to go through the dataset of `b`.
     let indices: [Int]
     /// The length of the underlying dataset.
@@ -86,7 +89,7 @@ public struct BatchIterator<C: Collection>: IteratorProtocol, Sequence where C.I
     /// Where we are at in the dataset.
     var pos: Int = 0
     
-    init(_ b: Batcher<C>) { 
+    init(_ b: Batcher<SourceDataSet>) { 
         self.b = b
         indices = b.sampleIndices(&self.b.dataset, b.shuffle)
         samplesCount = b.dataset.count
@@ -94,16 +97,16 @@ public struct BatchIterator<C: Collection>: IteratorProtocol, Sequence where C.I
     }
     
     /// Returns the next batch
-    public mutating func next() -> C.Element? {
+    public mutating func next() -> Element? {
         guard pos < samplesCount else { return nil }
         let end = Swift.min(pos + b.batchSize, samplesCount)
         if (end - pos) < b.batchSize && b.dropLast { return nil }
         // The idea is to have samples processed and collated on the CPU before moving to the host.
         // This part has not been optimized yet
-        return withDevice(.cpu) { () -> C.Element in
-            let n = b.threadsLimit == nil ? 1 : (end-pos) / b.threadsLimit
+        return withDevice(.cpu) { () -> Element in
+            let n = b.threadsLimit == nil ? 1 : (end-pos) / b.threadsLimit!
             let samples = Array(pos..<end).concurrentMap(minBatchSize: n) {
-                b.dataset[indices[$0]]
+                b.dataset[b.dataset.index(b.dataset.startIndex, offsetBy: indices[$0])]
             }
             pos = end
             return b.collateSamples(b.padSamples(samples))
@@ -116,17 +119,17 @@ public func defaultCollate<S: Collatable>(_ batch: [S]) -> S {
     return S(collating: batch)
 }
 
-public extension Batcher where C.Element: Collatable {
+public extension Batcher where Element: Collatable {
     /// Add default to collateSamples when the dataset elements conform to Collatable
     init(
-        on dataset: C, 
+        on dataset: SourceDataSet, 
         batchSize: Int, 
         threadsLimit: Int? = nil, 
         shuffle: Bool = false, 
         dropLast: Bool = false,
-        sampleIndices: @escaping (inout C, Bool) -> [Int] = defaultSample,
-        padSamples: @escaping ([C.Element]) -> [C.Element] = identity,
-        collateSamples: @escaping ([C.Element]) -> C.Element = defaultCollate
+        sampleIndices: @escaping (inout SourceDataSet, Bool) -> [Int] = defaultSample,
+        padSamples: @escaping ([Element]) -> [Element] = identity,
+        collateSamples: @escaping ([Element]) -> Element = defaultCollate
     ) {
         self.dataset = dataset
         self.batchSize = batchSize

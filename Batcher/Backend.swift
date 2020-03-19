@@ -19,7 +19,7 @@ import Foundation
 
 // Implementations of `concurrentMap` 
 extension RandomAccessCollection {
-    /// Returns `self.map(transform)`, computed in parallel on chuncks of self 
+    /// Returns `self.map(transform)`, computed in parallel on chunks of self 
     /// of size `minBatchSize`.
     ///
     /// - Requires: `transform` is safe to call from multiple threads.
