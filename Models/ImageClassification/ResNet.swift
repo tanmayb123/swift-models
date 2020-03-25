@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import TensorFlow
+import x10_device
+import x10_tensor
 
 // Original Paper:
 // "Deep Residual Learning for Image Recognition"
