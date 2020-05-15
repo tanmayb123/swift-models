@@ -61,35 +61,42 @@ let modelParameters = SNLM.Parameters(
   order: order
 )
 
-var model = SNLM(parameters: modelParameters)
+let device = Device.defaultXLA
 
-let optimizer = Adam(for: model)
+var model = SNLM(parameters: modelParameters)
+model.move(to: device)
+
+var optimizer = Adam(for: model)
+optimizer = Adam(copying: optimizer, to: device)
 
 print("Starting training...")
 
 for epoch in 1...maxEpochs {
   Context.local.learningPhase = .training
-  var trainingLossSum: Float = 0
+  var trainingLossSum: Tensor<Float> = Tensor(0, on: device)
   var trainingBatchCount = 0
   for sentence in dataset.training {
-    let (loss, gradients) = valueWithGradient(at: model) { model -> Float in
+    let (loss, gradients) = valueWithGradient(at: model) { model -> Tensor<Float> in
       let lattice = model.buildLattice(sentence, maxLen: maxLength)
       let score = lattice[sentence.count].semiringScore
       let expectedLength = exp(score.logr - score.logp)
       let loss = -1 * score.logp + lambd * expectedLength
-      return loss
+      return Tensor(loss, on: device)
     }
 
     trainingLossSum += loss
     trainingBatchCount += 1
     optimizer.update(&model, along: gradients)
-
+    LazyTensorBarrier()
+    #if false
     if hasNaN(gradients) {
       print("Warning: grad has NaN")
     }
     if hasNaN(model) {
       print("Warning: model has NaN")
     }
+    #endif
+    PrintX10Metrics()
   }
 
   print(

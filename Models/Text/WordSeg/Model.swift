@@ -154,20 +154,20 @@ public struct SNLM: EuclideanDifferentiable, KeyPathIterable {
 
     // Shapes are [time x batch] so that we can unstack the time dimension into the array that
     // the LSTM wants as input.
-    let x: Tensor<Int32> = Tensor(shape: [candidates.count, maxLen], scalars: xBatch).transposed()
-    let y: Tensor<Int32> = Tensor(shape: [candidates.count, maxLen], scalars: yBatch).transposed()
+    let x: Tensor<Int32> = Tensor(shape: [candidates.count, maxLen], scalars: xBatch, on: Device.defaultXLA).transposed()
+    let y: Tensor<Int32> = Tensor(shape: [candidates.count, maxLen], scalars: yBatch, on: Device.defaultXLA).transposed()
 
     // [time x batch x ndim]
     let embeddedX = dropout(decoderEmbedding(x))
 
     // [batch x ndim]
-    let stateBatch = state.rankLifted().tiled(multiples: Tensor([Int32(candidates.count), 1]))
+    let stateBatch = state.rankLifted().tiled(multiples: Tensor([Int32(candidates.count), 1], on: Device.defaultXLA))
 
     // [time] array of LSTM states whose `hidden` and `cell` fields have shape [batch x ndim]
     let decoderStates = decoderLSTM(
       embeddedX.unstacked(),
       initialState: LSTMCell.State(
-        cell: Tensor(zeros: stateBatch.shape),
+        cell: Tensor(zeros: stateBatch.shape, on: Device.defaultXLA),
         hidden: stateBatch))
 
     // [time x batch x ndim]
@@ -188,7 +188,10 @@ public struct SNLM: EuclideanDifferentiable, KeyPathIterable {
       ).reshaped(to: y.shape)
 
     // [time x batch]
-    let logpExcludingPad = logp * Tensor<Float>(y .!= parameters.chrVocab.pad)
+    let padScalars = [Int32](repeating: parameters.chrVocab.pad, count: candidates.count * maxLen)
+    let noPad = Tensor<Int32>(y .!= Tensor(shape: y.shape, scalars: padScalars, on: Device.defaultXLA))
+    let noPadFloat = Tensor<Float>(noPad)
+    let logpExcludingPad = logp * noPadFloat
 
     // [batch]
     let candidateLogP = logpExcludingPad.transposed().sum(squeezingAxes: 1)
@@ -360,9 +363,9 @@ extension Tensor {
     let shape = self.shape
     func pullback(_ tv: Array<Scalar>.TangentVector) -> Tensor {
       if tv.count == 0 {
-        return Tensor(zeros: shape)
+        return Tensor(zeros: shape, on: Device.defaultXLA)
       }
-      return Tensor(shape: shape, scalars: tv.base)
+      return Tensor(shape: shape, scalars: tv.base, on: Device.defaultXLA)
     }
     return (scalars, pullback)
   }
